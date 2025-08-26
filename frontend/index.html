@@ -1,0 +1,104 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Real-time Leaderboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        #leaderboard { border: 1px solid #ddd; border-radius: 5px; margin: 20px 0; }
+        .player { display: flex; padding: 10px; border-bottom: 1px solid #eee; }
+        .player .rank { width: 50px; font-weight: bold; }
+        .player .name { flex-grow: 1; }
+        .player .score { width: 100px; text-align: right; }
+        .header { font-weight: bold; background: #f5f5f5; }
+        form { margin: 20px 0; }
+        input, button { padding: 8px; margin: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Real-time Leaderboard</h1>
+    
+    <div id="leaderboard">
+        <div class="player header">
+            <div class="rank">#</div>
+            <div class="name">Player</div>
+            <div class="score">Score</div>
+        </div>
+        <div id="players"></div>
+    </div>
+
+    <form id="scoreForm">
+        <input type="text" id="playerName" placeholder="Your name" required>
+        <input type="number" id="playerScore" placeholder="Your score" required>
+        <button type="submit">Submit Score</button>
+    </form>
+
+    <script>
+        let ws;
+        const playersList = document.getElementById('players');
+        
+        const connectWebSocket = () => {
+            ws = new WebSocket('ws://localhost:8765');
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                // Request initial leaderboard data
+                ws.send(JSON.stringify({ action: 'submit_score' }));
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'leaderboard_update') {
+                    updateLeaderboard(data.data);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                // Try to reconnect after a delay
+                setTimeout(connectWebSocket, 3000);
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket disconnected. Attempting to reconnect...');
+                // Try to reconnect after a delay
+                setTimeout(connectWebSocket, 3000);
+            };
+        };
+        
+        // Initial connection
+        connectWebSocket();
+
+        // Update leaderboard UI
+        function updateLeaderboard(players) {
+            playersList.innerHTML = '';
+            players.forEach((player, index) => {
+                const playerEl = document.createElement('div');
+                playerEl.className = 'player';
+                playerEl.innerHTML = `
+                    <div class="rank">${index + 1}</div>
+                    <div class="name">${player.player_name}</div>
+                    <div class="score">${player.score}</div>
+                `;
+                playersList.appendChild(playerEl);
+            });
+        }
+
+        // Handle score submission
+        document.getElementById('scoreForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const playerName = document.getElementById('playerName').value;
+            const playerScore = parseInt(document.getElementById('playerScore').value);
+            
+            ws.send(JSON.stringify({
+                action: 'submit_score',
+                player_id: `player_${Date.now()}`,
+                player_name: playerName,
+                score: playerScore
+            }));
+            
+            e.target.reset();
+        });
+    </script>
+</body>
+</html>

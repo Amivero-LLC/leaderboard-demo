@@ -1,0 +1,25 @@
+services:
+  localstack:
+    image: localstack/localstack:latest
+    container_name: localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=dynamodb,apigateway,lambda,cloudwatch,iam,sts,logs
+      - DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - DEBUG=1
+      - LAMBDA_DOCKER_NETWORK=bridge
+      - LAMBDA_REMOTE_DOCKER=0
+      - LAMBDA_REMOVE_CONTAINERS=1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "${PWD}/data/localstack:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - localstack
+
+networks:
+  localstack:
+    driver: bridge
