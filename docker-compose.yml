@@ -1,16 +1,19 @@
+version: '3.8'
+
 services:
   localstack:
     image: localstack/localstack:latest
     container_name: localstack
     ports:
-      - "4566:4566"
+      - "4566:4566"  # LocalStack API
+      - "4510-4530:4510-4530"  # LocalStack endpoints
     environment:
       - SERVICES=dynamodb,apigateway,lambda,cloudwatch,iam,sts,logs
       - DEFAULT_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=test
       - AWS_SECRET_ACCESS_KEY=test
       - DEBUG=1
-      - LAMBDA_DOCKER_NETWORK=bridge
+      - LAMBDA_DOCKER_NETWORK=leaderboard_network
       - LAMBDA_REMOTE_DOCKER=0
       - LAMBDA_REMOVE_CONTAINERS=1
       - DOCKER_HOST=unix:///var/run/docker.sock
@@ -18,8 +21,39 @@ services:
       - "${PWD}/data/localstack:/var/lib/localstack"
       - "/var/run/docker.sock:/var/run/docker.sock"
     networks:
+      - leaderboard_network
+
+  websocket-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.websocket
+    container_name: websocket-server
+    ports:
+      - "8765:8765"  # WebSocket server port
+    depends_on:
       - localstack
+    environment:
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+    networks:
+      - leaderboard_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: leaderboard-frontend
+    ports:
+      - "80:80"  # Frontend port (Nginx runs on port 80)
+    environment:
+      - VITE_WS_URL=ws://localhost/ws
+    depends_on:
+      - websocket-server
+    networks:
+      - leaderboard_network
 
 networks:
-  localstack:
+  leaderboard_network:
     driver: bridge
