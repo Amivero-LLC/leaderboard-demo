@@ -4,6 +4,9 @@ import websockets
 import json
 import boto3
 import os
+import uuid
+import hashlib
+from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import List, Dict, Any, Set, Optional
@@ -180,20 +183,49 @@ async def handle_connection(websocket, path):
                 
                 if action == 'submit_score':
                     print(f"Processing submit_score from client {client_id}")
-                    # Update player score in DynamoDB
+                    player_id = data['player_id']
+                    # Generate a consistent player ID by hashing the lowercase name
+                    player_name = data.get('player_name', 'anonymous')
+                    player_id = hashlib.md5(player_name.lower().encode('utf-8')).hexdigest()
+                    
+                    # Use update_item with ADD to atomically update the score
+                    update_expression = 'ADD #score :score_val ' \
+                                     'SET #timestamp = :timestamp, #player_name = :player_name'
+                    
+                    expression_attr_names = {
+                        '#score': 'score',
+                        '#timestamp': 'timestamp',
+                        '#player_name': 'player_name'
+                    }
+                    
+                    expression_attr_values = {
+                        ':score_val': int(data['score']),  # ADD operation for the score
+                        ':timestamp': datetime.now(timezone.utc).isoformat(),
+                        ':player_name': player_name  # Store the original name for display
+                    }
+                    
+                    print(f"Updating score for player: {player_name} (ID: {player_id})")
+                    print(f"Update expression: {update_expression}")
+                    
                     try:
-                        table.put_item(Item={
-                            'player_id': data['player_id'],
-                            'score': data['score'],
-                            'timestamp': datetime.now(timezone.utc).isoformat(),
-                            **({'player_name': data['player_name']} if 'player_name' in data else {})
-                        })
-                        # Force an immediate leaderboard update
-                        async with update_lock:
-                            current_leaderboard = await get_leaderboard()
-                        await broadcast_leaderboard()
+                        response = table.update_item(
+                            Key={'player_id': player_id},
+                            UpdateExpression=update_expression,
+                            ExpressionAttributeNames=expression_attr_names,
+                            ExpressionAttributeValues=expression_attr_values,
+                            ReturnValues='UPDATED_NEW'  # Return the updated values
+                        )
+                        print(f"DynamoDB update_item response: {response}")
                     except Exception as e:
-                        print(f"Error submitting score: {e}")
+                        print(f"Error in update_item: {str(e)}")
+                        print(f"Error type: {type(e).__name__}")
+                        print(f"Error args: {e.args}")
+                        raise
+                    
+                    # Force an immediate leaderboard update
+                    async with update_lock:
+                        current_leaderboard = await get_leaderboard()
+                    await broadcast_leaderboard()
                 else:
                     print(f"Unknown action from client {client_id}: {action}")
                     

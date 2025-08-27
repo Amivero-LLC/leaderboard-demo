@@ -140,7 +140,23 @@ function App() {
                     onChange={(e) => setScore(e.target.value)}
                     required
                   />
-                  <Button type="submit" colorScheme="blue">
+                  <Button 
+                    type="submit" 
+                    colorScheme="blue"
+                    sx={{
+                      minWidth: '120px',
+                      padding: '6px',
+                      height: '40px',
+                      whiteSpace: 'nowrap',
+                      '&:hover': {
+                        transform: 'translateY(-1px)',
+                        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)'
+                      },
+                      '&:active': {
+                        transform: 'translateY(0)'
+                      }
+                    }}
+                  >
                     Submit Score
                   </Button>
                 </HStack>

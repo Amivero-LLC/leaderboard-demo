@@ -13,4 +13,4 @@ COPY backend/ .
 EXPOSE 8765
 
 # Command to run the WebSocket server
-CMD ["python", "leaderboard_server.py"]
+CMD ["python", "leaderboard_websocket.py"]
