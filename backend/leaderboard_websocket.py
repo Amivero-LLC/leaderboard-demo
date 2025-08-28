@@ -4,12 +4,10 @@ import websockets
 import json
 import boto3
 import os
-import uuid
+import time
 import hashlib
-from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
-from decimal import Decimal
-from typing import List, Dict, Any, Set, Optional
+from typing import Dict, List, Any, Set
 
 # Initialize DynamoDB client (LocalStack)
 dynamodb = boto3.resource(
@@ -23,45 +21,47 @@ dynamodb = boto3.resource(
 # Store connected WebSocket clients
 connected: Set[Any] = set()
 
-# Initialize DynamoDB table
-try:
+def init_dynamodb_table():
+    # List all tables to check if leaderboard exists
+    existing_tables = dynamodb.meta.client.list_tables()['TableNames']
+    
+    if 'leaderboard' in existing_tables:
+        print("Deleting existing leaderboard table...")
+        table = dynamodb.Table('leaderboard')
+        table.delete()
+        # Wait for table to be deleted
+        waiter = table.meta.client.get_waiter('table_not_exists')
+        waiter.wait(TableName='leaderboard')
+        print("Deleted existing leaderboard table")
+    
+    # Create the table with the correct schema
+    print("Creating new leaderboard table...")
     table = dynamodb.create_table(
         TableName='leaderboard',
-        KeySchema=[
-            {
-                'AttributeName': 'player_id',
-                'KeyType': 'HASH'  # Partition key
-            },
-            {
-                'AttributeName': 'score',
-                'KeyType': 'RANGE'  # Sort key
-            }
-        ],
+        KeySchema=[{'AttributeName': 'player_id', 'KeyType': 'HASH'}],
         AttributeDefinitions=[
-            {
-                'AttributeName': 'player_id',
-                'AttributeType': 'S'  # String
-            },
-            {
-                'AttributeName': 'score',
-                'AttributeType': 'N'  # Number
-            }
+            {'AttributeName': 'player_id', 'AttributeType': 'S'},
+            {'AttributeName': 'score', 'AttributeType': 'N'},
+            {'AttributeName': 'leaderboard_id', 'AttributeType': 'S'}
         ],
-        ProvisionedThroughput={
-            'ReadCapacityUnits': 5,
-            'WriteCapacityUnits': 5
-        }
+        GlobalSecondaryIndexes=[{
+            'IndexName': 'score-index',
+            'KeySchema': [
+                {'AttributeName': 'leaderboard_id', 'KeyType': 'HASH'},
+                {'AttributeName': 'score', 'KeyType': 'RANGE'},
+            ],
+            'Projection': {'ProjectionType': 'ALL'},
+            'ProvisionedThroughput': {'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
+        }],
+        ProvisionedThroughput={'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
     )
     # Wait until the table exists
     table.meta.client.get_waiter('table_exists').wait(TableName='leaderboard')
-    print("Created DynamoDB table 'leaderboard'")
-except Exception as e:
-    if 'ResourceInUseException' in str(e):
-        table = dynamodb.Table('leaderboard')
-        print("Using existing DynamoDB table 'leaderboard'")
-    else:
-        print(f"Error creating DynamoDB table: {e}")
-        raise
+    print("Successfully created leaderboard table with updated schema")
+    return table
+
+# Initialize DynamoDB table
+table = init_dynamodb_table()
 
 # Cache for the current leaderboard state
 current_leaderboard: List[Dict[str, Any]] = []
@@ -78,19 +78,50 @@ def convert_decimals(obj):
         return float(obj)
     return obj
 
-async def get_leaderboard() -> List[Dict[str, Any]]:
-    """Fetch and return the current leaderboard from DynamoDB"""
+async def get_leaderboard(limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Fetch and return the current leaderboard from DynamoDB using GSI for better performance.
+    Returns top 'limit' players sorted by score in descending order.
+    """
     try:
-        response = table.scan()
-        leaderboard = sorted(
-            response['Items'],
-            key=lambda x: x.get('score', 0),
-            reverse=True
-        )[:10]  # Top 10 players
-        return convert_decimals(leaderboard)
+        start_time = time.time()
+        
+        # Query the GSI to get top K scores in descending order
+        response = table.query(
+            IndexName='score-index',
+            KeyConditionExpression='leaderboard_id = :lid AND #score > :zero',
+            ExpressionAttributeNames={
+                '#score': 'score'
+            },
+            ExpressionAttributeValues={
+                 ':lid': 'default_leaderboard',
+                 ':zero': 0
+            },
+            ScanIndexForward=False,  # Sort in descending order
+            Limit=limit
+        )
+        items = response.get('Items', [])
+        
+        # Convert Decimal to float for JSON serialization
+        items = convert_decimals(items)
+        
+        # Log performance metrics
+        duration = (time.time() - start_time) * 1000  # Convert to milliseconds
+        print(f"Leaderboard query completed in {duration:.2f}ms")
+        
+        return items
+        
     except Exception as e:
-        print(f"Error fetching leaderboard: {e}")
-        return []
+        print(f"Error getting leaderboard: {e}")
+        # Fallback to scan if GSI query fails
+        try:
+            print("Falling back to table scan...")
+            response = table.scan()
+            items = response.get('Items', [])
+            return sorted(items, key=lambda x: x.get('score', 0), reverse=True)[:limit]
+        except Exception as fallback_error:
+            print(f"Fallback scan also failed: {fallback_error}")
+            return []
 
 async def broadcast_leaderboard():
     """Broadcast the current leaderboard to all connected clients"""
@@ -190,18 +221,36 @@ async def handle_connection(websocket, path):
                     
                     # Use update_item with ADD to atomically update the score
                     update_expression = 'ADD #score :score_val ' \
-                                     'SET #timestamp = :timestamp, #player_name = :player_name'
+                                     'SET #timestamp = :timestamp, #player_name = :player_name, #leaderboard_id = :leaderboard_id'
                     
                     expression_attr_names = {
                         '#score': 'score',
                         '#timestamp': 'timestamp',
-                        '#player_name': 'player_name'
+                        '#player_name': 'player_name',
+                        '#leaderboard_id': 'leaderboard_id'
                     }
                     
+                    # Default leaderboard ID if not specified
+                    leaderboard_id = data.get('leaderboard_id', 'default_leaderboard')
+                    
+                    # Validate score
+                    try:
+                        score = int(data.get('score', 0))
+                        if score <= 0:
+                            raise ValueError("Score must be positive")
+                    except (ValueError, TypeError) as e:
+                        print(f"Invalid score from client: {data.get('score')}")
+                        await websocket.send(json.dumps({
+                            'type': 'error',
+                            'message': 'Invalid score: must be a positive number'
+                        }))
+                        continue
+                    
                     expression_attr_values = {
-                        ':score_val': int(data['score']),  # ADD operation for the score
+                        ':score_val': score,
                         ':timestamp': datetime.now(timezone.utc).isoformat(),
-                        ':player_name': player_name  # Store the original name for display
+                        ':player_name': player_name,
+                        ':leaderboard_id': leaderboard_id  # Store the original name for display
                     }
                     
                     print(f"Updating score for player: {player_name} (ID: {player_id})")
