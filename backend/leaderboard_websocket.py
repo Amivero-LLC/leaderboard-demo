@@ -7,8 +7,8 @@ from fastapi import WebSocket
 class InMemoryLeaderboard:
     def __init__(self, top_k: int = 10):
         self.top_k = top_k
-        self.scores: Dict[str, int] = {}  # player_id -> score
-        self.heap: List[Tuple[int, str]] = []  # min-heap of (score, player_id)
+        self.scores: Dict[str, int] = {}  # user_id -> score
+        self.heap: List[Tuple[int, str]] = []  # min-heap of (score, user_id)
         self.subscribers: Set[WebSocket] = set()
 
     async def add_subscriber(self, websocket: WebSocket):
@@ -18,62 +18,42 @@ class InMemoryLeaderboard:
     def remove_subscriber(self, websocket: WebSocket):
         self.subscribers.discard(websocket)
 
-    async def update_score(self, player_id: str, points: int):
+    async def update_score(self, user_id: str, points: int):
         # Update the score
-        self.scores[player_id] = self.scores.get(player_id, 0) + points
-        current_score = self.scores[player_id]
+        self.scores[user_id] = self.scores.get(user_id, 0) + points
+        current_score = self.scores[user_id]
         
         # Update the heap
-        for i, (score, pid) in enumerate(self.heap):
-            if pid == player_id:
-                self.heap[i] = (current_score, player_id)
+        for i, (score, uid) in enumerate(self.heap):
+            if uid == user_id:
+                self.heap[i] = (current_score, user_id)
                 heapq.heapify(self.heap)
                 break
         else:
             if len(self.heap) < self.top_k:
-                heapq.heappush(self.heap, (current_score, player_id))
+                heapq.heappush(self.heap, (current_score, user_id))
             elif current_score > self.heap[0][0]:
                 heapq.heappop(self.heap)
-                heapq.heappush(self.heap, (current_score, player_id))
+                heapq.heappush(self.heap, (current_score, user_id))
         
         await self._send_updates()
 
     def get_leaderboard(self) -> List[Dict[str, Any]]:
-        """Get top K scores in descending order with O(n log k) time and O(k) space"""
-        if not self.heap:
-            return []
-            
-        # Create a max heap by negating the scores
-        max_heap = [(-score, pid) for score, pid in self.heap]
-        heapq.heapify(max_heap)
-        
-        # Get top k elements
-        result = []
-        
-        for _ in range(min(len(max_heap), self.top_k)):
-            if not max_heap:
-                break
-            # Get the current max (min of negative is max of positive)
-            score, pid = heapq.heappop(max_heap)
-            result.append((-score, pid))  # Convert back to positive score
-        
-        # Format the output as list of dicts
-        return [{"player_id": pid, "score": score} for score, pid in result]
+        """Get top K scores in descending order"""
+        sorted_scores = sorted(self.heap, key=lambda x: (-x[0], x[1]))
+        return [{"user_id": uid, "score": score} for score, uid in sorted_scores]
 
     async def _send_updates(self):
         """Send current leaderboard to all subscribers"""
         leaderboard = self.get_leaderboard()
         message = json.dumps({"type": "leaderboard_update", "data": leaderboard})
-        for websocket in self.subscribers:
+        # Create a list copy of subscribers to avoid modification during iteration
+        for websocket in list(self.subscribers):
             try:
-                await websocket.send(message)
+                await websocket.send_text(message)
             except Exception as e:
                 print(f"Error sending message to WebSocket: {e}")
                 self.remove_subscriber(websocket)
-                
-    def get_top_scores(self, num_scores: int) -> int:
-        return self.get_leaderboard()[:num_scores]
-        
 
 # Global instance
 leaderboard = InMemoryLeaderboard(top_k=10)
@@ -96,25 +76,28 @@ app.add_middleware(
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    print("New WebSocket connection established")
     await leaderboard.add_subscriber(websocket)
     
     try:
         while True:
-            # Keep the connection alive
+            # Keep the connection open
             data = await websocket.receive_text()
             try:
                 message = json.loads(data)
-                if message.get("type") == "update_score":
-                    player_id = message.get("player_id")
-                    points = message.get("points", 0)
-                    if player_id is not None and isinstance(points, (int, float)):
-                        await leaderboard.update_score(player_id, int(points))
+                print(f"Received message: {message}")
+                if message.get('type') == 'update_score':
+                    user_id = message.get('user_id')
+                    points = message.get('points', 0)
+                    if user_id is not None and points is not None:
+                        await leaderboard.update_score(user_id, int(points))
             except json.JSONDecodeError:
-                pass
+                print(f"Received non-JSON message: {data}")
     except Exception as e:
         print(f"WebSocket error: {e}")
     finally:
         leaderboard.remove_subscriber(websocket)
+        print("WebSocket connection closed")
 
 if __name__ == "__main__":
     import uvicorn
