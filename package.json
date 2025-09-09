@@ -1,0 +1,5 @@
+{
+  "devDependencies": {
+    "@types/websocket": "^1.0.10"
+  }
+}

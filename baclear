@@ -1,0 +1,19 @@
+from fastapi import FastAPI, WebSocket
+
+app = FastAPI()
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    await leaderboard.add_subscriber(websocket)
+    
+    try:
+        while True:
+            data = await websocket.receive_json()
+            if data["type"] == "update_score":
+                await leaderboard.update_score(
+                    user_id=data["user_id"],
+                    points=data["points"]
+                )
+    except:
+        leaderboard.remove_subscriber(websocket)
