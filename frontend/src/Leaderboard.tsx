@@ -41,7 +41,7 @@ export function Leaderboard() {
         <h2>Top Scores</h2>
         {leaderboard.map((entry: { user_id: string; score: number }, index: number) => (
           <div key={entry.user_id} className="score-entry">
-            <span>{index + 1}. {entry.user_id}</span>
+            <span>{index + 1}. {entry.user_id} </span>
             <span>{entry.score} points</span>
           </div>
         ))}
