@@ -98,3 +98,7 @@ coverage.xml
 
 # Local development
 .cache/
+
+# LocalStack data
+data/
+localstack/
